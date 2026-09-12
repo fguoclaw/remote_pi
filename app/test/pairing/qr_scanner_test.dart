@@ -38,11 +38,8 @@ void main() {
       // newline no meio do payload.
       final raw =
           'remotepi://pair?t=$goodToken&epk=$goodEpk&n=$sessionName';
-      final wrapped = raw.substring(0, 20) +
-          '\n' +
-          raw.substring(20, 45) +
-          '\r\n' +
-          raw.substring(45);
+      final wrapped =
+          '${raw.substring(0, 20)}\n${raw.substring(20, 45)}\r\n${raw.substring(45)}';
 
       final qr = QrPairPayload.tryParse(wrapped);
 
