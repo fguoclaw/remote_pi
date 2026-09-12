@@ -21,9 +21,9 @@ android {
 
     defaultConfig {
         applicationId = "dev.remotepi.remote_pi_identity_example"
-        // plan/23 § "Versão mínima Android" — example app standardizes
-        // on Android 14 (API 34).
-        minSdk = 34
+        // plan/23 § "Revisão — minSdk 31" — example app mirrors the
+        // plugin floor: Android 12 (API 31).
+        minSdk = 31
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

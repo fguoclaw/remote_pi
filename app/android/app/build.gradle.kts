@@ -37,11 +37,14 @@ android {
 
     defaultConfig {
         applicationId = "work.jacobmoura.remotepi"
-        // plan/23 § "Versão mínima Android" — the remote_pi_identity
-        // plugin requires API 34 (Block Store + modern biometry), so
-        // the app inherits the same floor. Bump intentional, recorded
-        // in the plano.
-        minSdk = 34
+        // plan/23 § "Versão mínima Android" — revised down to API 31
+        // (Android 12). The old API 34 floor was NOT a technical
+        // requirement: Block Store works from API 23, and no code in
+        // remote_pi_identity touches an API-34-only symbol. It did
+        // exclude the Android 12 e-ink tablets this app targets
+        // (Onyx BOOX and friends), which failed to install with
+        // INSTALL_FAILED_OLDER_SDK. See plan/23 § "Revisão — minSdk 31".
+        minSdk = 31
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

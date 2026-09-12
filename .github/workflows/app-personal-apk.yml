@@ -1,0 +1,117 @@
+# Build pessoal do APK Android — fork de trabalho (fguoclaw/remote_pi).
+#
+# Por que existe: o `app-release.yml` é o workflow de distribuição oficial e
+# exige os 4 secrets do keystore release (ANDROID_KEYSTORE, _PASSWORD,
+# _KEY_PASSWORD, _ALIAS). Secrets NÃO são herdados pelo fork, então aquele
+# workflow falha aqui (keystore vazio → assinatura quebra + o guard anti-debug
+# reprova). Este aqui produz um APK instalável por sideload SEM nenhum secret:
+# o Gradle do app cai sozinho pro debug keystore quando `android/key.properties`
+# está ausente — ver `hasReleaseKeystore` em app/android/app/build.gradle.kts.
+#
+# Resultado: APK em modo release, assinado com a debug key.
+#   ✅ serve pra instalar e testar no device (sideload)
+#   ❌ não serve pra publicar, nem pra atualizar por cima de uma instalação
+#      assinada com a release key (nesse caso: desinstalar antes de instalar)
+#
+# Trigger: manual (workflow_dispatch) ou push em `main` que toque app/**.
+name: app-personal-apk
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - ".github/workflows/app-personal-apk.yml"
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: "3.44.4"
+  # Tag fixa: cada build sobrescreve os assets, então a URL de download é
+  # estável — dá pra baixar direto do navegador do tablet, sem login.
+  RELEASE_TAG: personal-latest
+
+jobs:
+  apk:
+    name: APK (modo release, debug-signed)
+    runs-on: ubuntu-24.04
+    defaults: { run: { working-directory: app } }
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Build APK release (keystore debug)
+        run: |
+          flutter pub get
+          flutter build apk --release
+
+      # Gate de aceite: a instalação em Android 12 (Onyx BOOX T10C etc.)
+      # depende de minSdk 31. Se alguém subir o piso de novo, o job falha aqui
+      # em vez de gerar um APK que não instala. Ver plan/23 § "Revisão — minSdk 31".
+      - name: Valida minSdk do APK
+        run: |
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          AAPT="$ANDROID_HOME/build-tools/$BT/aapt"
+          if [ ! -x "$AAPT" ]; then
+            AAPT="$ANDROID_HOME/build-tools/$BT/aapt2"
+          fi
+          BADGING=$("$AAPT" dump badging "$APK")
+          echo "$BADGING" | grep -E "^package:|^sdkVersion:|^targetSdkVersion:|^native-code:"
+          MIN=$(echo "$BADGING" | sed -n "s/^sdkVersion:'\([0-9]*\)'.*/\1/p")
+          if [ "$MIN" != "31" ]; then
+            echo "::error::minSdk do APK é '$MIN', esperado 31"
+            exit 1
+          fi
+
+      - name: Publica o APK na tag ${{ env.RELEASE_TAG }}
+        run: |
+          mkdir -p out
+          cp build/app/outputs/flutter-apk/app-release.apk out/RemotePi-personal.apk
+          (cd out && sha256sum RemotePi-personal.apk > SHA256SUMS)
+          cat out/SHA256SUMS
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" out/RemotePi-personal.apk out/SHA256SUMS --clobber
+          else
+            NOTES=$(mktemp)
+            {
+              echo "APK em **modo release assinado com a debug key** — só para sideload/teste."
+              echo ""
+              echo "- Não é o artefato de distribuição (esse é o \`RemotePi.apk\` do upstream, assinado com a release key)."
+              echo "- Para instalar por cima de uma instalação assinada com a release key, desinstale antes."
+              echo "- Cada execução deste workflow sobrescreve os assets desta tag."
+            } > "$NOTES"
+            gh release create "$RELEASE_TAG" out/RemotePi-personal.apk out/SHA256SUMS \
+              --title "Remote Pi — build pessoal (debug-signed)" \
+              --notes-file "$NOTES" \
+              --prerelease \
+              --latest=false
+          fi
+
+      - name: Resumo
+        run: |
+          {
+            echo "## APK pronto — build pessoal (debug-signed)"
+            echo ""
+            echo "Download direto:"
+            echo "\`https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/RemotePi-personal.apk\`"
+            echo ""
+            echo "SHA256 (conferir no device):"
+            echo '```'
+            cat out/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

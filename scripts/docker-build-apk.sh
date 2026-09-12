@@ -43,7 +43,11 @@ if [[ -t 0 && -t 1 ]]; then
   tty_args=(-it)
 fi
 
-docker run --rm "${tty_args[@]}" \
+# ${tty_args[@]+...} instead of plain "${tty_args[@]}": macOS ships bash 3.2,
+# where expanding an empty array under `set -u` aborts with
+# "tty_args[@]: unbound variable". The guarded form is 3.2-safe and still
+# works on bash 4/5.
+docker run --rm ${tty_args[@]+"${tty_args[@]}"} \
   -v "$ROOT":/work \
   -v "$PUB_CACHE":/root/.pub-cache \
   -v "$GRADLE_CACHE":/root/.gradle \

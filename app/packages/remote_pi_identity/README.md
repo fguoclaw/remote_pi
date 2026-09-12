@@ -45,7 +45,12 @@ plugin (or a new method-channel surface), not an upgrade path here.
 | Platform | Min version | Sync surface | What you need on the device |
 |---|---|---|---|
 | iOS | **26.0** | iCloud Keychain (`kSecAttrSynchronizable=true`) | Signed into iCloud + iCloud Keychain enabled |
-| Android | **API 34** (Android 14) | Block Store (`setShouldBackupToCloud(true)`) | Google account + Google Backup on + lock screen set |
+| Android | **API 31** (Android 12) | Block Store (`setShouldBackupToCloud(true)`) | Google account + Google Backup on + lock screen set |
+
+> The Android floor was lowered from API 34 to **API 31** (see
+> `plan/23-owner-key-sync.md` § "Revisão — minSdk 31"). The higher floor was
+> discretionary, not technical: Block Store itself works from **API 23**, and
+> this plugin calls no API-34-only symbol.
 
 On iOS the plugin uses a generic-password Keychain item; on Android it
 uses Google Play Services Block Store

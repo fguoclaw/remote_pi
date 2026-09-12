@@ -6,7 +6,7 @@ Google Play section is at the bottom; most copy is shared.
 - **iOS Bundle ID:** `work.jacobmoura.remotepi.app` (the plain `work.jacobmoura.remotepi` is reserved by another Apple team)
 - **Android applicationId:** `work.jacobmoura.remotepi` (separate Play namespace — no conflict)
 - **Apple Team:** `U843T2P7A2`
-- **Min iOS:** 18.0 · **Min Android:** API 34 (Android 14)
+- **Min iOS:** 18.0 · **Min Android:** API 31 (Android 12)
 - **Platforms:** iPhone **+ iPad** (universal — iPad 13" screenshots required)
 
 > ⚠️ **Copy rule:** never claim "end-to-end encrypted". The relay still sees
@@ -184,9 +184,16 @@ Reuses the same brand voice and the **no-E2E copy rule** above.
 
 - **applicationId:** `work.jacobmoura.remotepi` (Play namespace is independent of
   Apple — the iOS rename does NOT apply here; this ID is fine on Play)
-- **Min SDK:** API 34 (Android 14) — intentional, `remote_pi_identity` needs
-  Block Store. **Target SDK:** Flutter default (verify it meets Play's current
+- **Min SDK:** API 31 (Android 12) — lowered from API 34; the old floor was
+  discretionary, not a technical requirement (`remote_pi_identity` uses Block
+  Store, which works from API 23, and calls no API-34-only symbol). The higher
+  floor blocked install on Android 12 e-ink tablets (Onyx BOOX etc.) with
+  `INSTALL_FAILED_OLDER_SDK`. See `plan/23-owner-key-sync.md` § "Revisão —
+  minSdk 31". **Target SDK:** Flutter default (verify it meets Play's current
   minimum target — API 35 for new apps).
+- **Runtime caveat:** on a device without Google Play Services (common on e-ink
+  tablets), `isSyncAvailable()` fails and the app hard-stops on `/sync-required`.
+  Installing is not the same as being usable.
 - **Signing:** already configured. Upload key in `android/signing/remotepi-release.jks`
   (alias `remotepi`), loaded via `android/key.properties`. On first upload, enroll
   in **Play App Signing** (Google manages the app key; this keystore is the upload key).

@@ -44,8 +44,54 @@ Hoje (`relay/src/peers/registry.rs`, plan 17):
 | Sync no Android | **Block Store apenas** (resolve P1 recovery + P2 troca de device). P3 simultâneo (iPhone+iPad live) **é iOS-only no MVP.** Android sem live sync entre devices ativos — fallback é re-pairing manual. Credential Manager / passkey adiado pra `plan/26-android-live-sync.md` eventual |
 | Comportamento sem sync disponível | **Bloqueia primeira abertura** com mensagem clara. iOS: "Ative iCloud Keychain em Ajustes > [seu nome] > iCloud > Senhas e Chaves." Android: "Ative o Backup do Google em Ajustes > Sistema > Backup." Sem fallback "gera local" pra evitar divergência silenciosa com sync futuro |
 | **Versão mínima iOS** | **iOS 26.0** — todo o ecossistema Apple suportado pelo Remote Pi é 26+. Permite usar APIs Keychain/CryptoKit modernas sem fallback. Trade-off: corta base de iOS 17/18, aceito conscientemente em favor de código mais limpo |
-| **Versão mínima Android** | **API 34 (Android 14)** como `minSdk`. Permite Credential Manager estável (futuro), Material 3 completo, biometria moderna, themed icons. Block Store funciona desde API 23 — versão alta não muda Block Store em si, mas mantém código de plataforma enxuto |
+| **Versão mínima Android** | **API 31 (Android 12)** como `minSdk` — **revisado em 2026-09-12**, ver § "Revisão — minSdk 31" abaixo. Decisão original era **API 34 (Android 14)**; o piso era discricionário (Credential Manager futuro, Material 3, themed icons) e não técnico: Block Store funciona desde API 23 e nenhum código do plugin usa símbolo exclusivo de API 34. Na prática o piso 34 bloqueava instalação em tablets e-ink Android 12 (Onyx BOOX, etc.) com `INSTALL_FAILED_OLDER_SDK` |
 | **Versão Flutter** | Flutter 3.41+ / Dart 3.11+ (mantém o que o app já usa) |
+
+---
+
+## Revisão — minSdk 31 (2026-09-12)
+
+**Motivo.** O APK release `app-v1.2.0` (`RemotePi.apk`) não instala em tablets
+Android 12 — ex: **Onyx BOOX T10C** (Android 12 = API 31). O instalador falha com
+`INSTALL_FAILED_OLDER_SDK` ("app não é compatível com este dispositivo").
+
+**Evidência.** Manifesto do APK publicado:
+
+```
+package: work.jacobmoura.remotepi
+versionCode 8 · versionName 1.2.0
+targetSdk 36 · minSdk 34        ← API 34 = Android 14
+abi: arm64-v8a, armeabi-v7a, x86_64
+```
+
+**Por que o piso 34 não era necessário.** A justificativa original ("Block Store
+exige API 34") estava errada — o próprio plano registrava que Block Store funciona
+desde **API 23**. Verificado também no código: `BlockStoreStore.kt` e
+`RemotePiIdentityPlugin.kt` não chamam nenhum símbolo exclusivo de API 34 (sem
+`Build.VERSION`, `@RequiresApi`, `Biometric*`, `CredentialManager`); só usam
+`play-services-auth-blockstore:16.4.0` e `KeyguardManager`. O piso era
+discricionário (Credential Manager futuro / Material 3 / themed icons) e o custo
+real era cortar a base de tablets e-ink Android 12 — público-alvo óbvio do app.
+
+**Decisão.** `minSdk = 31` em três lugares, mantidos em lockstep:
+
+| Arquivo | Antes | Depois |
+|---|---|---|
+| `app/android/app/build.gradle.kts` | 34 | **31** |
+| `app/packages/remote_pi_identity/android/build.gradle.kts` | 34 | **31** |
+| `app/packages/remote_pi_identity/example/android/app/build.gradle.kts` | 34 | **31** |
+
+Docs sincronizados: `app/store_listing.md`, `README.md` do plugin.
+
+**Não resolvido por esta revisão.** Em device **sem Google Play Services**
+(situação comum em e-ink), `isSyncAvailable()` falha e o app para em
+`/sync-required` — regra de "Bloqueia primeira abertura" da tabela acima.
+Instalar passa a funcionar; **usar** depende de GMS + Google Backup + tela de
+bloqueio. Se isso se confirmar no device alvo, a decisão de "sem fallback local"
+precisa ser revisitada explicitamente (novo plano, não silenciosamente aqui).
+
+**Verificação.** `flutter build apk --release` + `sideload` no device Android 12;
+conferir `aapt dump badging` / parser de AXML reportando `minSdk 31`.
 
 ---
 
@@ -121,7 +167,7 @@ app/packages/remote_pi_identity/
 ├── example/
 │   ├── lib/main.dart                       # app demo: load / save / watch / delete
 │   ├── ios/Runner.xcodeproj/                # iOS 26 mínimo
-│   ├── android/app/build.gradle             # minSdk 34
+│   ├── android/app/build.gradle             # minSdk 31
 │   └── pubspec.yaml
 ├── test/
 │   ├── owner_identity_test.dart            # serialização
@@ -215,7 +261,7 @@ App Flutter mínimo demonstrando:
 - Indicador "Sync available: yes/no" via `isSyncAvailable()`
 - Listener no `watch()` que reage a mudanças
 - iOS: `Runner.xcodeproj` configurado pra iOS 26
-- Android: `app/build.gradle` com `minSdk 34`, `compileSdk 35`+, `targetSdk 35`+
+- Android: `app/build.gradle` com `minSdk 31`, `compileSdk 35`+, `targetSdk 35`+
 
 ### Versões e configuração de plataforma
 
@@ -232,7 +278,7 @@ platform :ios, '26.0'
 android {
     compileSdk 35
     defaultConfig {
-        minSdk 34
+        minSdk 31
         targetSdk 35
     }
 }
@@ -261,16 +307,15 @@ flutter:
 
 - [ ] Plugin compila isolado (`cd app/packages/remote_pi_identity && flutter pub get && flutter analyze` passa)
 - [ ] Example app compila em iOS (`flutter build ios --no-codesign` no `example/`) com `minIOSVersion = 26.0`
-- [ ] Example app compila em Android (`flutter build apk --debug` no `example/`) com `minSdk 34`
+- [ ] Example app compila em Android (`flutter build apk --debug` no `example/`) com `minSdk 31`
 - [ ] Testes unitários passam (`flutter test` no plugin) — cobrem serialização e in-memory store
 - [ ] Example app rodando em **um** device iOS físico: ciclo `Generate → Save → Reabre app → Load` retorna o mesmo blob
 - [ ] Example app rodando em **um** device Android físico: idem
 - [ ] (Manual, opcional pra Wave 1) Em **dois** devices iOS físicos do mesmo Apple ID: salvar em A → reabrir B → `Load` em B retorna o blob salvo em A (validação do iCloud Keychain sync)
-- [ ] README do plugin documenta API, requisitos (iOS 26 / Android 14), e o requisito de iCloud Keychain ativado / Google Backup ativado
+- [ ] README do plugin documenta API, requisitos (iOS 26 / Android 12), e o requisito de iCloud Keychain ativado / Google Backup ativado
 - [ ] CHANGELOG.md com versão inicial `0.1.0`
 
 ### Não-objetivos da Wave 1
-
 - **Não tocar `app/lib/`**. Refactor do `DeviceIdentity` é Wave 2.
 - **Não implementar fan-out no Pi**. É Wave 3.
 - **Não fazer roundtrip com pi-extension/relay**. Wave 1 valida só o plugin isoladamente.

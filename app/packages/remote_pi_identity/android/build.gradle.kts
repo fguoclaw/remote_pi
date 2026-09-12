@@ -50,11 +50,13 @@ android {
     }
 
     defaultConfig {
-        // plan/23: minSdk 34 (Android 14). Block Store itself works
-        // back to API 23, but the project as a whole standardizes on
-        // 14+ for modern biometry / themed icons / Credential Manager
-        // (future) — see plano 23 § "Decisões fixadas".
-        minSdk = 34
+        // plan/23 § "Revisão — minSdk 31": the old API 34 floor was
+        // discretionary, not technical — Block Store works back to
+        // API 23 and this plugin calls no API-34-only symbol. It was
+        // lowered to API 31 (Android 12) so the app installs on
+        // Android 12 e-ink tablets (Onyx BOOX etc.). Keep this in
+        // lockstep with app/android/app/build.gradle.kts.
+        minSdk = 31
     }
 
     testOptions {
