@@ -41,7 +41,13 @@ class QrPairPayload {
 
   static QrPairPayload? tryParse(String raw) {
     try {
-      final uri = Uri.parse(raw);
+      // Tolerar artefato de copy/paste: o caminho "sem câmera" entrega
+      // este texto por um campo multilinha, e terminais quebram URIs
+      // longas em várias linhas. Sem isto, a URI quebrada falhava no
+      // parse de base64/query sem explicação visível pro usuário. Nem a
+      // URI nem base64url carregam whitespace significativo (espaços no
+      // nome de sessão chegam URL-encoded, como `+` / `%20`).
+      final uri = Uri.parse(raw.replaceAll(RegExp(r'\s'), ''));
       if (uri.scheme != 'remotepi' || uri.host != 'pair') return null;
       final t = uri.queryParameters['t'];
       final epk = uri.queryParameters['epk'];

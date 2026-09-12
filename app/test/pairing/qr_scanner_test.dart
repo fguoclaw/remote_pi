@@ -31,6 +31,27 @@ void main() {
           reason: 'no r= present — app uses its configured relay');
     });
 
+    test('aceita payload quebrado em linhas (paste com wrap do terminal)',
+        () {
+      // O caminho sem câmera cola a URI num campo multilinha
+      // (paste_qr_sheet.dart); terminal que quebra a linha longa insere
+      // newline no meio do payload.
+      final raw =
+          'remotepi://pair?t=$goodToken&epk=$goodEpk&n=$sessionName';
+      final wrapped = raw.substring(0, 20) +
+          '\n' +
+          raw.substring(20, 45) +
+          '\r\n' +
+          raw.substring(45);
+
+      final qr = QrPairPayload.tryParse(wrapped);
+
+      expect(qr, isNotNull,
+          reason: 'wrap de terminal não pode invalidar o código colado');
+      expect(qr!.token, goodToken);
+      expect(qr.epk, goodEpk);
+    });
+
     test('rejects when t is missing or wrong length', () {
       final missingT =
           'remotepi://pair?epk=$goodEpk&n=$sessionName';
