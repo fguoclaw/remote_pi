@@ -12,7 +12,13 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 /// not available. The app cannot proceed without it because the Owner
 /// Ed25519 keypair has no other persistence path.
 class SyncRequiredPage extends StatefulWidget {
-  const SyncRequiredPage({super.key});
+  const SyncRequiredPage({super.key, this.retryBoot});
+
+  /// Plan 23 (revisão) — refaz o boot completo do app (`_BootState.load`),
+  /// que é quem decide o gate e quem inicializa peers, watcher de sync e
+  /// conexão. Injetado pelo router; null em testes que montem a página
+  /// isolada.
+  final Future<void> Function()? retryBoot;
 
   @override
   State<SyncRequiredPage> createState() => _SyncRequiredPageState();
@@ -20,10 +26,30 @@ class SyncRequiredPage extends StatefulWidget {
 
 class _SyncRequiredPageState extends State<SyncRequiredPage> {
   bool _checking = false;
+  bool _localFallbackFailed = false;
 
   Future<void> _recheck() async {
     if (_checking) return;
-    setState(() => _checking = true);
+    setState(() {
+      _checking = true;
+      _localFallbackFailed = false;
+    });
+
+    // Plan 23 (revisão) — antes isso chamava `bridge.boot()` e navegava
+    // pra /boot. Como o gate (`_syncAvailable`) só é recalculado dentro de
+    // `_BootState.load()`, o redirect devolvia o usuário pra cá pra
+    // sempre: habilitar o backup e tocar "Check again" não destravava
+    // nada. Agora refazemos o boot inteiro.
+    final retry = widget.retryBoot;
+    if (retry != null) {
+      await retry();
+      if (!mounted) return;
+      setState(() => _checking = false);
+      // Se destravou, o próprio redirect do router leva pra frente
+      // (refreshListenable em `_BootState`). Se não, continuamos aqui.
+      return;
+    }
+
     final result = await injector.get<OwnerIdentityBridge>().boot();
     if (!mounted) return;
     setState(() => _checking = false);
@@ -32,6 +58,40 @@ class _SyncRequiredPageState extends State<SyncRequiredPage> {
       // (pairs-empty → /onboarding, pairs-non-empty → /home).
       context.go('/boot');
     }
+  }
+
+  /// Plan 23 (revisão) — opt-in explícito pela chave **local**, pra
+  /// devices onde o surface de sync não existe (Android sem Google Play
+  /// Services: Block Store não é nem sondável). A chave vai pro secure
+  /// storage do sistema e não faz backup — trocar de aparelho exige parear
+  /// de novo. Nada aqui é automático: só roda com o toque do usuário.
+  Future<void> _continueWithLocalKey() async {
+    if (_checking) return;
+    setState(() {
+      _checking = true;
+      _localFallbackFailed = false;
+    });
+
+    final result = await injector
+        .get<OwnerIdentityBridge>()
+        .boot(allowLocalFallback: true);
+    if (!mounted) return;
+
+    if (result is SyncUnavailableResult) {
+      // Nem o secure storage local aceitou a chave (Keystore
+      // indisponível): não há caminho neste device.
+      setState(() {
+        _checking = false;
+        _localFallbackFailed = true;
+      });
+      return;
+    }
+
+    // Boot completo: peers, watcher e conexão — o mesmo caminho do
+    // "Check again" que deu certo.
+    await widget.retryBoot?.call();
+    if (!mounted) return;
+    setState(() => _checking = false);
   }
 
   @override
@@ -133,10 +193,107 @@ class _SyncRequiredPageState extends State<SyncRequiredPage> {
                         ),
                       ),
               ),
+              const SizedBox(height: 18),
+              // Plan 23 (revisão) — saída para devices onde o surface de
+              // sync não existe (ex.: Android sem Google Play Services, em
+              // que o Block Store não é sequer sondável). Opt-in explícito:
+              // a chave fica só neste device.
+              _LocalKeyFallback(
+                isIOS: isIOS,
+                enabled: !_checking,
+                failed: _localFallbackFailed,
+                onContinue: _continueWithLocalKey,
+              ),
               const SizedBox(height: 32),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Plan 23 (revisão) — cartucho de saída "sem sync": continua com uma
+/// Owner-key local, persistida no secure storage do sistema (Keystore no
+/// Android). É opt-in explícito e deixa o trade-off na cara do usuário:
+/// a chave não faz backup, então trocar de aparelho exige parear de novo.
+class _LocalKeyFallback extends StatelessWidget {
+  const _LocalKeyFallback({
+    required this.isIOS,
+    required this.enabled,
+    required this.failed,
+    required this.onContinue,
+  });
+
+  final bool isIOS;
+  final bool enabled;
+  final bool failed;
+  final VoidCallback onContinue;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final mono = TextStyle(
+      fontFamily: kMonoFamily,
+      fontSize: 11,
+      color: colors.muted2,
+      height: 1.4,
+    );
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border.all(color: colors.border),
+        borderRadius: const BorderRadius.all(Radius.circular(6)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            isIOS
+                ? 'Not signing in to iCloud?'
+                : 'No Google services on this device?',
+            style: TextStyle(
+              fontFamily: kMonoFamily,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: colors.text,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Keep your key on this device instead. It is not backed up and '
+            'does not follow you to a new device — you would pair your Pis '
+            'again there.',
+            style: mono,
+          ),
+          const SizedBox(height: 10),
+          TextButton(
+            onPressed: enabled ? onContinue : null,
+            style: TextButton.styleFrom(
+              foregroundColor: colors.accent,
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text(
+              'Use a local key instead',
+              style: TextStyle(
+                fontFamily: kMonoFamily,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          if (failed) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Could not save a key on this device — secure storage refused '
+              'the write.',
+              style: mono.copyWith(color: colors.error),
+            ),
+          ],
+        ],
       ),
     );
   }

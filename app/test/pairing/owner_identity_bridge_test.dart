@@ -7,6 +7,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:app/pairing/local_owner_identity_store.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/storage.dart';
 import 'package:cryptography/cryptography.dart';
@@ -64,6 +65,31 @@ class _FakeSecureStorage implements FlutterSecureStorage {
   }) async => Map.of(_store);
   @override
   noSuchMethod(Invocation i) => super.noSuchMethod(i);
+}
+
+/// Fallback local que não consegue persistir (Keystore indisponível,
+/// secure storage quebrado).
+class _BrokenLocalStore implements OwnerIdentityStore {
+  @override
+  Future<OwnerIdentity?> load() async {
+    throw const PlatformFailure('secure_storage_read', 'boom');
+  }
+
+  @override
+  Future<void> save(OwnerIdentity identity) async {
+    throw const PlatformFailure('secure_storage_write', 'boom');
+  }
+
+  @override
+  Future<void> delete() async {
+    throw const PlatformFailure('secure_storage_delete', 'boom');
+  }
+
+  @override
+  Stream<OwnerIdentity> watch() => const Stream<OwnerIdentity>.empty();
+
+  @override
+  Future<bool> isSyncAvailable() async => false;
 }
 
 Future<OwnerIdentity> _freshIdentity() async {
@@ -142,6 +168,208 @@ void main() {
 
       expect(result, isA<SyncUnavailableResult>());
       expect(bridge.currentOwnerPk, isNull);
+    });
+  });
+
+  group('plan/23 revisão — fallback de chave local (device sem sync)', () {
+    test('boot() normal NUNCA cria chave local sozinho', () async {
+      final local = LocalOwnerIdentityStore(_FakeSecureStorage());
+      final bridge = OwnerIdentityBridge(
+        InMemoryOwnerIdentityStore(syncAvailable: false),
+        PairingStorage(_FakeSecureStorage()),
+        localStore: local,
+      );
+
+      final result = await bridge.boot();
+
+      expect(result, isA<SyncUnavailableResult>());
+      expect(bridge.currentOwnerPk, isNull);
+      expect(bridge.usesLocalFallback, isFalse);
+      expect(await local.load(), isNull,
+          reason: 'sem opt-in explícito nada é persistido localmente');
+    });
+
+    test('boot(allowLocalFallback: true) gera e persiste a chave local',
+        () async {
+      final secure = _FakeSecureStorage();
+      final local = LocalOwnerIdentityStore(secure);
+      final bridge = OwnerIdentityBridge(
+        InMemoryOwnerIdentityStore(syncAvailable: false),
+        PairingStorage(_FakeSecureStorage()),
+        localStore: local,
+      );
+
+      final result = await bridge.boot(allowLocalFallback: true);
+
+      expect(result, isA<IdentityReady>());
+      expect((result as IdentityReady).generated, isTrue);
+      expect(bridge.usesLocalFallback, isTrue);
+      expect(bridge.source, OwnerIdentitySource.local);
+      final persisted = await local.load();
+      expect(persisted, isNotNull);
+      expect(persisted!.ownerPk, bridge.currentOwnerPk);
+    });
+
+    test('aberturas seguintes do app usam a chave local sem novo opt-in',
+        () async {
+      final secure = _FakeSecureStorage();
+      final local = LocalOwnerIdentityStore(secure);
+      // Primeiro opt-in (processo anterior).
+      final first = OwnerIdentityBridge(
+        InMemoryOwnerIdentityStore(syncAvailable: false),
+        PairingStorage(_FakeSecureStorage()),
+        localStore: local,
+      );
+      final firstResult = await first.boot(allowLocalFallback: true);
+      final pk = first.currentOwnerPk!;
+
+      // Novo processo: boot normal, platform store continua fora.
+      final second = OwnerIdentityBridge(
+        InMemoryOwnerIdentityStore(syncAvailable: false),
+        PairingStorage(_FakeSecureStorage()),
+        localStore: local,
+      );
+      final secondResult = await second.boot();
+
+      expect(firstResult, isA<IdentityReady>());
+      expect(secondResult, isA<IdentityReady>());
+      expect((secondResult as IdentityReady).generated, isFalse,
+          reason: 'a chave veio do store local, não foi gerada de novo');
+      expect(second.usesLocalFallback, isTrue);
+      expect(second.currentOwnerPk, pk, reason: 'mesma identidade, sem QR novo');
+    });
+
+    test('local wins: identidade local vence a do platform store e converge '
+        'empurrando ela pra cima', () async {
+      final localId = await _freshIdentity();
+      final platformId = await _freshIdentity();
+      final secure = _FakeSecureStorage();
+      final local = LocalOwnerIdentityStore(secure);
+      await local.save(localId);
+      final platform = InMemoryOwnerIdentityStore(initial: platformId);
+      final bridge = OwnerIdentityBridge(
+        platform,
+        PairingStorage(_FakeSecureStorage()),
+        localStore: local,
+      );
+
+      final result = await bridge.boot();
+
+      expect((result as IdentityReady).identity.ownerPk, localId.ownerPk);
+      expect(bridge.usesLocalFallback, isTrue);
+      // Convergência: o platform store passou a ter a MESMA chave, em vez
+      // de virar uma segunda identidade pro mesmo humano.
+      expect((await platform.load())!.ownerPk, localId.ownerPk);
+    });
+
+    test('platform indisponível não impede o boot local (convergência é '
+        'best-effort)', () async {
+      final localId = await _freshIdentity();
+      final local = LocalOwnerIdentityStore(_FakeSecureStorage());
+      await local.save(localId);
+      final bridge = OwnerIdentityBridge(
+        InMemoryOwnerIdentityStore(syncAvailable: false),
+        PairingStorage(_FakeSecureStorage()),
+        localStore: local,
+      );
+
+      final result = await bridge.boot();
+
+      expect(result, isA<IdentityReady>());
+      expect(bridge.currentOwnerPk, localId.ownerPk);
+    });
+
+    test('secure storage local quebrado não derruba o boot (volta pro gate)',
+        () async {
+      final bridge = OwnerIdentityBridge(
+        InMemoryOwnerIdentityStore(syncAvailable: false),
+        PairingStorage(_FakeSecureStorage()),
+        localStore: _BrokenLocalStore(),
+      );
+
+      expect(await bridge.boot(), isA<SyncUnavailableResult>());
+      expect(
+        await bridge.boot(allowLocalFallback: true),
+        isA<SyncUnavailableResult>(),
+        reason: 'nem a chave local persistiu: não há caminho neste device',
+      );
+    });
+
+    test('source = local: chave diferente vinda do platform NÃO substitui a '
+        'local nem apaga os peers', () async {
+      final localId = await _freshIdentity();
+      final local = LocalOwnerIdentityStore(_FakeSecureStorage());
+      await local.save(localId);
+      final platform = InMemoryOwnerIdentityStore(syncAvailable: false);
+      final storage = PairingStorage(_FakeSecureStorage());
+      await storage.savePeer(const PeerRecord(
+        remoteEpk: 'epk-precious',
+        sessionName: 'pi',
+        relayUrl: 'https://r',
+        pairedAt: '2026-05-15T10:30:00Z',
+      ));
+      final bridge = OwnerIdentityBridge(platform, storage, localStore: local);
+      await bridge.boot(); // local wins
+
+      var resets = 0;
+      bridge.startWatching(onReset: () async => resets++);
+
+      // O sync "fica bom" e entrega OUTRA chave (ex.: veio de um restore
+      // de outro device).
+      platform.syncAvailable = true;
+      await platform.save(await _freshIdentity());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(bridge.currentOwnerPk, localId.ownerPk);
+      expect(await storage.listPeers(), hasLength(1),
+          reason: 'chave local é autoritativa: nada de wipe');
+      expect(resets, 0);
+    });
+  });
+
+  group('LocalOwnerIdentityStore', () {
+    test('roundtrip save → load preserva os 64 bytes', () async {
+      final store = LocalOwnerIdentityStore(_FakeSecureStorage());
+      final id = await _freshIdentity();
+
+      await store.save(id);
+      final loaded = await store.load();
+
+      expect(loaded, isNotNull);
+      expect(loaded!.ownerPk, id.ownerPk);
+      expect(loaded.ownerSk, id.ownerSk);
+    });
+
+    test('sem valor persistido → null (primeira abertura)', () async {
+      expect(await LocalOwnerIdentityStore(_FakeSecureStorage()).load(),
+          isNull);
+    });
+
+    test('blob corrompido → null em vez de exceção', () async {
+      final secure = _FakeSecureStorage();
+      await secure.write(
+        key: LocalOwnerIdentityStore.storageKey,
+        value: 'nao-e-base64-64-bytes',
+      );
+      final store = LocalOwnerIdentityStore(secure);
+
+      expect(await store.load(), isNull);
+    });
+
+    test('delete limpa o valor', () async {
+      final store = LocalOwnerIdentityStore(_FakeSecureStorage());
+      await store.save(await _freshIdentity());
+
+      await store.delete();
+
+      expect(await store.load(), isNull);
+    });
+
+    test('nunca sincroniza: watch() vazio e isSyncAvailable() false', () async {
+      final store = LocalOwnerIdentityStore(_FakeSecureStorage());
+
+      expect(await store.watch().isEmpty, isTrue);
+      expect(await store.isSyncAvailable(), isFalse);
     });
   });
 

@@ -30,6 +30,20 @@ final class IdentityReady extends OwnerIdentityBootResult {
   const IdentityReady(this.identity, {required this.generated});
 }
 
+/// Plan 23 (revisão) — de onde veio a Owner-key em uso nesta sessão.
+enum OwnerIdentitySource {
+  /// Nada bootado ainda.
+  none,
+
+  /// Platform store (iCloud Keychain / Block Store) — caminho do plan/23.
+  synced,
+
+  /// Fallback local ([LocalOwnerIdentityStore]): device cujo surface de
+  /// sync não é utilizável (ex.: Android sem Google Play Services). Só
+  /// acontece depois do opt-in explícito na tela `/sync-required`.
+  local,
+}
+
 /// Bridge between the `remote_pi_identity` plugin and the rest of the
 /// app. Responsibilities:
 ///
@@ -43,15 +57,34 @@ final class IdentityReady extends OwnerIdentityBootResult {
 class OwnerIdentityBridge extends ChangeNotifier {
   final OwnerIdentityStore _store;
   final PairingStorage _pairing;
+
+  /// Plan 23 (revisão) — fallback local, usado **só** quando o platform
+  /// store não é utilizável. Null desliga o fallback (testes/debug).
+  final OwnerIdentityStore? _localStore;
+
   final Ed25519 _ed25519 = Ed25519();
 
   OwnerIdentity? _current;
+  OwnerIdentitySource _source = OwnerIdentitySource.none;
+
+  /// True quando a chave local foi criada neste processo (primeiro
+  /// opt-in). O `generated` do [IdentityReady] usa isto pra que a
+  /// primeira abertura caia no onboarding, igual ao caminho com sync.
+  bool _localGeneratedThisRun = false;
+
   StreamSubscription<OwnerIdentity>? _watchSub;
   bool _disposed = false;
 
-  OwnerIdentityBridge(this._store, this._pairing);
+  OwnerIdentityBridge(this._store, this._pairing, {OwnerIdentityStore? localStore})
+      : _localStore = localStore;
 
   OwnerIdentity? get currentIdentity => _current;
+
+  /// Plan 23 (revisão) — a sessão está rodando com chave local (sem sync).
+  bool get usesLocalFallback => _source == OwnerIdentitySource.local;
+
+  /// De onde veio a Owner-key em uso.
+  OwnerIdentitySource get source => _source;
 
   /// Public key of the currently-loaded Owner identity (or null when
   /// the bridge hasn't booted yet). Surfaces this for the router's
@@ -61,6 +94,17 @@ class OwnerIdentityBridge extends ChangeNotifier {
   /// Load (or generate) the Owner identity.
   /// Idempotent — repeated calls are cheap once `_current` is populated.
   ///
+  /// Ordem de preferência (plan/23 revisão — "local wins"):
+  ///  1. uma identidade **local** já persistida: autoritativa neste
+  ///     device. O platform store não pode substituí-la depois (ver
+  ///     [startWatching]) — se ele estiver utilizável, a chave local sobe
+  ///     pra lá (convergência) em vez de nascer uma segunda identidade.
+  ///  2. o platform store, exatamente como no plan/23 original.
+  ///  3. com [allowLocalFallback], gera e persiste uma chave local quando
+  ///     o platform store não é utilizável. Esse flag só é passado pela
+  ///     tela `/sync-required`, depois do usuário escolher abertamente
+  ///     seguir sem backup — o boot normal **nunca** cria chave local.
+  ///
   /// The `isSyncAvailable()` pre-flight is deliberately NOT a gate here
   /// (issue #39): on iOS it used to mirror the ubiquity token, which is
   /// always nil without an iCloud entitlement, so every App Store user
@@ -69,14 +113,27 @@ class OwnerIdentityBridge extends ChangeNotifier {
   /// throws [SyncUnavailable] when the platform sync surface genuinely
   /// can't hold the key (e.g. Android Block Store without backup), and
   /// only that verdict sends the router to /sync-required.
-  Future<OwnerIdentityBootResult> boot() async {
+  Future<OwnerIdentityBootResult> boot({bool allowLocalFallback = false}) async {
+    final local = await _loadLocal();
+    if (local != null) {
+      _current = local;
+      _source = OwnerIdentitySource.local;
+      // Best-effort: se o sync virou utilizável desde o opt-in, empurra a
+      // chave local pra lá (convergência). Falha aqui (sync ainda off) é
+      // esperada e silenciosa.
+      await convergeToPlatform();
+      return IdentityReady(local, generated: _localGeneratedThisRun);
+    }
+
     try {
       final loaded = await _store.load();
       if (loaded != null) {
         _current = loaded;
+        _source = OwnerIdentitySource.synced;
         return IdentityReady(loaded, generated: false);
       }
     } on SyncUnavailable {
+      if (allowLocalFallback) return _generateLocalIdentity();
       return const SyncUnavailableResult();
     } on IdentityStoreError {
       // Load failed — fall through and generate a fresh identity.
@@ -85,8 +142,61 @@ class OwnerIdentityBridge extends ChangeNotifier {
     try {
       final generated = await _generateAndSave();
       _current = generated;
+      _source = OwnerIdentitySource.synced;
       return IdentityReady(generated, generated: true);
     } on SyncUnavailable {
+      if (allowLocalFallback) return _generateLocalIdentity();
+      return const SyncUnavailableResult();
+    }
+  }
+
+  /// Plan 23 (revisão) — empurra a identidade local para o platform
+  /// store, quando ele estiver utilizável. Retorna `true` se convergiu
+  /// nesta chamada. Sem efeito quando a sessão não está em modo local.
+  Future<bool> convergeToPlatform() async {
+    if (_source != OwnerIdentitySource.local) return false;
+    final id = _current;
+    if (id == null) return false;
+    try {
+      await _store.save(id);
+      return true;
+    } on IdentityStoreError {
+      return false;
+    }
+  }
+
+  /// Leitura do fallback local, tolerante a falha: se o secure storage
+  /// não responder, o fallback simplesmente não é uma opção aqui e o
+  /// caminho do platform store decide (nunca derruba o boot).
+  Future<OwnerIdentity?> _loadLocal() async {
+    final store = _localStore;
+    if (store == null) return null;
+    try {
+      return await store.load();
+    } on IdentityStoreError {
+      return null;
+    }
+  }
+
+  /// Cria a chave local (opt-in). Falha só se o próprio secure storage
+  /// não persistir — nesse caso não há caminho e a tela de sync continua.
+  Future<OwnerIdentityBootResult> _generateLocalIdentity() async {
+    final store = _localStore;
+    if (store == null) return const SyncUnavailableResult();
+    try {
+      final kp = await _ed25519.newKeyPair();
+      final pub = await kp.extractPublicKey();
+      final priv = await kp.extractPrivateKeyBytes();
+      final id = OwnerIdentity(
+        ownerPk: Uint8List.fromList(pub.bytes),
+        ownerSk: Uint8List.fromList(priv),
+      );
+      await store.save(id);
+      _current = id;
+      _source = OwnerIdentitySource.local;
+      _localGeneratedThisRun = true;
+      return IdentityReady(id, generated: true);
+    } on IdentityStoreError {
       return const SyncUnavailableResult();
     }
   }
@@ -147,6 +257,13 @@ class OwnerIdentityBridge extends ChangeNotifier {
   void startWatching({required Future<void> Function() onReset}) {
     _watchSub?.cancel();
     _watchSub = _store.watch().listen((incoming) async {
+      // Plan 23 (revisão, "local wins"): enquanto a sessão rodar com
+      // chave local, ela é autoritativa neste device. Uma chave diferente
+      // vinda do platform store não pode substituí-la — isso rotacionaria
+      // a identidade e órfãoaria os pareamentos do usuário. A convergência
+      // vai no sentido oposto: `convergeToPlatform()` empurra a chave
+      // local pra cima.
+      if (_source == OwnerIdentitySource.local) return;
       final current = _current;
       if (current == null) {
         _current = incoming;

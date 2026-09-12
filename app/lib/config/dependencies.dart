@@ -23,6 +23,7 @@ import 'package:app/data/voice/speech_service.dart';
 import 'package:app/domain/contracts/dismissed_update_store.dart';
 import 'package:app/domain/contracts/update_checker.dart';
 import 'package:app/domain/contracts/url_opener.dart';
+import 'package:app/pairing/local_owner_identity_store.dart';
 import 'package:app/pairing/owner_identity_bridge.dart';
 import 'package:app/pairing/pair_request_flow.dart';
 import 'package:app/pairing/qr_scanner.dart';
@@ -63,11 +64,16 @@ Future<void> setupDependencies() async {
   // Plan 23 — Owner-key sync. The store talks to the native plugin
   // (iCloud Keychain on iOS, Block Store on Android); the bridge sits
   // between it and the rest of the app, owning boot + watch-for-reset.
+  //
+  // Plan 23 (revisão) — o `localStore` é o fallback pra devices sem
+  // surface de sync utilizável (Android sem Google Play Services). Ele só
+  // é usado depois do opt-in explícito na tela /sync-required.
   final OwnerIdentityStore ownerStore = MethodChannelOwnerIdentityStore();
   _injector.addInstance<OwnerIdentityStore>(ownerStore);
   final ownerBridge = OwnerIdentityBridge(
     ownerStore,
     _injector.get<PairingStorage>(),
+    localStore: LocalOwnerIdentityStore(),
   );
   _injector.addInstance<OwnerIdentityBridge>(ownerBridge);
 

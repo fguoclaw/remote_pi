@@ -192,8 +192,11 @@ Reuses the same brand voice and the **no-E2E copy rule** above.
   minSdk 31". **Target SDK:** Flutter default (verify it meets Play's current
   minimum target — API 35 for new apps).
 - **Runtime caveat:** on a device without Google Play Services (common on e-ink
-  tablets), `isSyncAvailable()` fails and the app hard-stops on `/sync-required`.
-  Installing is not the same as being usable.
+  tablets), `isSyncAvailable()` fails and the first launch hard-stops on
+  `/sync-required`. That screen now offers an explicit opt-in escape: continue
+  with a **local-only key** (`LocalOwnerIdentityStore`, Keystore-backed, no
+  backup — a new device means pairing again). See
+  `plan/23-owner-key-sync.md` § "Revisão — fallback de chave local".
 - **Signing:** already configured. Upload key in `android/signing/remotepi-release.jks`
   (alias `remotepi`), loaded via `android/key.properties`. On first upload, enroll
   in **Play App Signing** (Google manages the app key; this keystore is the upload key).

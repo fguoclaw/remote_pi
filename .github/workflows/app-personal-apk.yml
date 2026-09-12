@@ -54,10 +54,21 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Analyze (gate)
+        run: flutter analyze
+
+      # Só o diretório pairing: a suíte inteira tem uma falha pré-existente
+      # dependente de host (test/data/voice/speech_service_test.dart espera
+      # `SoundLevelScale.forPlatform() == darwin`, ou seja, host macOS —
+      # falha em runner Linux e é independente deste workflow).
+      - name: Testes de pairing (gate)
+        run: flutter test test/pairing/
+
       - name: Build APK release (keystore debug)
-        run: |
-          flutter pub get
-          flutter build apk --release
+        run: flutter build apk --release
 
       # Gate de aceite: a instalação em Android 12 (Onyx BOOX T10C etc.)
       # depende de minSdk 31. Se alguém subir o piso de novo, o job falha aqui

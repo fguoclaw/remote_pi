@@ -216,9 +216,24 @@ GoRouter buildRouter(
       // Plan 23 — first-launch gate when iCloud Keychain / Google
       // Backup is off. Sticky route: redirect keeps the user here
       // until the bridge reports sync available.
+      //
+      // Plan 23 (revisão) — `retryBoot` refaz o boot **completo**
+      // (`_BootState.load`), não só a leitura da Owner-key: sem isso a
+      // saída da tela não inicializava peers/watcher/conexão, e o gate
+      // (`_syncAvailable`, decidido dentro de `load`) nunca reabria — a
+      // página ficava presa mesmo depois do usuário habilitar o backup.
       GoRoute(
         path: '/sync-required',
-        builder: (ctx, st) => const SyncRequiredPage(),
+        builder: (ctx, st) => SyncRequiredPage(
+          retryBoot: () => boot.load(
+            storage,
+            conn,
+            prefs,
+            ownerBridge,
+            meshSync,
+            installWatcherAfterBoot: installWatcher,
+          ),
+        ),
       ),
 
       // Plan/tablet — adaptive master-detail shell.

@@ -95,6 +95,49 @@ conferir `aapt dump badging` / parser de AXML reportando `minSdk 31`.
 
 ---
 
+## Revisão — fallback de chave local (2026-09-12)
+
+**Motivo.** Com o `minSdk` corrigido, o device instala — e trava na tela
+`/sync-required`. O piso de 34 escondia este bloqueio: nos **tablets e-ink sem
+Google Play Services** (Onyx BOOX T10C, Android 12) o Block Store não é sequer
+sondável (`isSyncAvailable()` falha antes de qualquer leitura), então nenhuma
+das três instruções da tela (lock screen / Google Backup / conta Google) é
+satisfazível e **não havia saída** — a página só tinha "Check again".
+
+**Decisão revertida parcialmente.** A linha "Comportamento sem sync disponível:bloqueia primeira abertura … sem fallback 'gera local'" ganha uma exceção
+**opt-in**: quando o surface de sync não é utilizável, o usuário pode escolher
+seguir com uma **chave local**, persistida em `flutter_secure_storage`
+(EncryptedSharedPreferences sobre o Keystore do sistema — não depende de GMS;
+mesmo store que o app já usa para peers, preferences e dismiss de update).
+
+| Aspecto | Decisão |
+|---|---|
+| Automatismo | **Zero.** O boot normal nunca cria chave local. Só o botão "Use a local key instead" em `/sync-required` passa `allowLocalFallback: true` |
+| Persistência | `LocalOwnerIdentityStore` (Dart, no app) — a mesma abstração `OwnerIdentityStore` do plugin, sem tocar Kotlin/Swift |
+| Regra de conflito | **"local wins"**: enquanto houver identidade local, ela é autoritativa neste device; o watcher do platform store **ignora** chaves diferentes (não rotaciona a identidade nem apaga pareamentos) |
+| Convergência | `convergeToPlatform()` empurra a chave local para o platform store quando ele virar utilizável — as duas pontas convergem na mesma chave, em vez de virar duas identidades para o mesmo humano (a divergência que este plano queria evitar) |
+| Trade-off exposto ao usuário | A chave **não** faz backup: reinstalar ou trocar de aparelho exige parear de novo. Dito na própria UI antes do toque |
+| Escopo | Só o caminho Android sem GMS. iOS/iCloud e devices com GMS seguem exatamente o comportamento anterior |
+
+**Risco residual aceito.** Se o mesmo humano já tem uma chave **sincronizada**
+outro device, a convergência sobrescreve aquela chave com a local: aquele
+device precisa re-parear. Alternativa considerada (mantê-la como autoritativa =
+plan/23 original) tem o custo oposto — **este** device perde os pareamentos,
+que é justamente o que o BOOX não pode pagar por não ter outro caminho.
+
+**Bug pré-existente corrigido no caminho.** O botão "Check again" **nunca
+destravava**: o gate (`_syncAvailable`) só é recalculado dentro de
+`_BootState.load()`, e a página chamava `bridge.boot()` + `go('/boot')` — o
+redirect devolvia o usuário pra `/sync-required` para sempre (habilitar o iCloud
+Keychain / Backup e tocar o botão não abria o app; só reiniciar o processo).
+Agora a página recebe `retryBoot` do router e refaz o boot **completo** —
+necessário também para inicializar peers, watcher e conexão no caminho novo.
+
+**Promoção para o upstream** é decisão separada — este patch nasceu como
+build pessoal no fork (`fguoclaw/remote_pi`) pra desbloquear um device real.
+
+---
+
 ## Decisões a fechar antes da Wave 1
 
 - **Q4 — Limites de tamanho.** Block Store no Android é ~1KB. Cabe ~10-15 peers com base64 + metadata. Estratégia quando estourar: compressão gzip? Múltiplos blobs por bucket? Cap em N peers? Eventualmente impactado pela decisão sobre "servidor próprio pra storage" (em discussão).
